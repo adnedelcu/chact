@@ -4,87 +4,106 @@ import Prism from "prismjs";
 
 function App() {
   const [prompt, setPrompt] = useState('');
-  const [chat, setChat] = useState([]);
+  const [chat, setChat] = useState([
+    {
+      role: 'system',
+      content: 'You are a software developer student that only speaks in rhymes' // This is the system message, it will control the behavior of the chatbot
+    }
+  ]);
   const [isLoading, setIsLoading] = useState(false);
 
-  const callApi = async () => {
+  const callChatApi = async () => {
     try {
       setIsLoading(true);
-      // ... code up to the prompt validation
-      // Request
       const response = await fetch('http://localhost:5050/api/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          mode: 'development', // Set the mode to development to not send the request to Open AI for now
+          mode: 'development',
           provider: 'open-ai'
         },
         body: JSON.stringify({
           model: 'gpt-4o',
           stream: true,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a software developer student that only speaks in rhymes' // This is the system message, it will control the behavior of the chatbot
-            },
-            {
-              role: 'user',
-              content: prompt // This is the user message, it will be the prompt for the chatbot
-            }
-          ]
+          messages: chat
         })
       });
+
       if (!response.ok) {
-        // If the response is not ok, throw an error by parsing the JSON response
         const { error } = await response.json();
         setIsLoading(false);
         throw new Error(error);
       }
 
-      // Process stream response
-      // Get the responses stream
       const reader = response.body.getReader();
-      // Create a new TextDecoder
       const decoder = new TextDecoder('utf-8');
-      // Variable to store the data result
       let dataResult = '';
       const chatEntry = {};
-      // Variable to check if the stream is done
       let isDone = false;
-      // While the stream is not closed, i.e. done is false
+
       while (!isDone) {
-        // Read the next chunk
         const result = await reader.read();
-        // If the result is done, break out of the loop
         if (result.done) {
           isDone = true;
           break;
         }
-        // Decode the result
+
         const chunk = decoder.decode(result.value, { stream: true });
-        // Split lines by new line, you can get more than one line per chunk
         const lines = chunk.split('\n');
-        // Loop through each line
         lines.forEach(line => {
-          // Check if the line starts with data:, that's how Open AI sends the data
           if (line.startsWith('data:')) {
-            // Get the JSON string without the data: prefix
             const jsonStr = line.replace('data:', '');
-            // Parse the JSON string
             const data = JSON.parse(jsonStr);
-            // Get the content from the first choice
             const content = data.choices[0]?.delta?.content;
-            // If there is content
             if (content) {
               dataResult += content;
             }
-            setChat([...chat, { role: 'system', content: dataResult }]);
-            // setChat((prevChat) => [...prevChat, { role: 'system', content: dataResult }]);
+
+            setChat([...chat, { role: 'assistant', content: dataResult }]);
           }
         });
       }
     } catch (error) {
-      // If an error occurs, log it to the console
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const callImageApi = async (count, size, base64) => {
+    try {
+      setIsLoading(true);
+      const response = await fetch('http://localhost:5050/api/v1/images/generations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          mode: 'development',
+          provider: 'open-ai'
+        },
+        body: JSON.stringify({
+          // model: 'dall-e-3',
+          n: count || 1,
+          size: size || "256x256",
+          response_format: base64 ? 'b64_json' : null,
+          prompt: prompt
+        })
+      });
+
+      if (!response.ok) {
+        const { error } = await response.json();
+        setIsLoading(false);
+        throw new Error(error);
+      }
+
+      let images = await response.json();
+      images = images.map(image => {
+        return {
+          uuid: image.uuid,
+          url: image.url ? `${image.url}&t=${image.uuid}` : `data:image/png;base64,${image.b64_json}`,
+        }
+      });
+      setChat([...chat, { role: 'assistant', images: images }]);
+    } catch (error) {
       console.error(error);
     } finally {
       setIsLoading(false);
@@ -92,12 +111,31 @@ function App() {
   };
 
   useEffect(() => {
-    console.log(chat);
+    // console.log(chat);
     if (chat.length && chat[chat.length-1]?.role === 'user') {
-      callApi();
+      if (chat[chat.length-1].content.toLowerCase().includes('draw')) {
+        let count = prompt.match(/draw \d+/);
+        count = count && count[0].replace('draw ', '');
+        let size = prompt.match(/with size \d+x\d+/);
+        if (!size) {
+          size = prompt.match(/with size \d+p?x? by \d+p?x?/);
+        }
+        size = size && size[0].replace('with size ', '');
+        size = size && size.split(' by ');
+        if (size?.length == 2) {
+          size = size.map(entry => parseInt(entry));
+        }
+        let base64 = prompt.match(/base64/) || false;
+        if (base64[0]) {
+          base64 = true;
+        }
+        // console.log(size, size?.join('x'));
+        callImageApi(count, size?.join('x'), base64);
+      } else {
+        callChatApi();
+      }
       setPrompt('');
     }
-    Prism.highlightAll();
   }, [chat]);
 
   const sendPrompt = () => {
@@ -108,6 +146,14 @@ function App() {
     setChat([...chat, {role: 'user', content: prompt}]);
   };
 
+  const updateOrder = (images, index) => {
+    const first = images.shift();
+    images.push(first);
+    const newChat = JSON.parse(JSON.stringify(chat));
+    newChat[index].images = images;
+    setChat(newChat);
+  };
+
   return (
     <>
       <main className="container">
@@ -116,7 +162,22 @@ function App() {
           <div className="display">
             <div className="artboard artboard-demo phone-1">
               <div className="w-full chats overflow-auto">
-                {chat.map((entry, index) => <div className={`chat ${entry.role == 'system' ? 'chat-start' : 'chat-end'}`} key={index}><div className={`chat-bubble ${entry.role == 'system' ? 'chat-bubble-primary' : 'chat-bubble-info'}`}><Markdown>{entry.content}</Markdown></div></div>)}
+                {chat.map((entry, index) => {
+                  if (entry.role == 'system') {
+                    return <p className="text-muted" key={index}>{entry.content}</p>
+                  }
+
+                  return <div className={`chat ${entry.role == 'assistant' ? 'chat-start' : 'chat-end'}`} key={index}>
+                    <div className={`chat-bubble ${entry.role == 'assistant' ? 'chat-bubble-primary' : 'chat-bubble-success'}`}>
+                      {entry.content && <Markdown>{entry.content}</Markdown>}
+                      {entry.images && (
+                        <div className="stack">
+                          {entry.images.map((image, key) => <img className={`transition-all duration-500 ${key === 0 ? 'ease-in-out' : 'ease-in'}`} key={image.uuid} src={`${image.url}`} alt={image.uuid} onClick={() => updateOrder(entry.images, index)} />)}
+                        </div>
+                      )}
+                    </div>
+                  </div>;
+                })}
               </div>
             </div>
             <div className="pb-6 w-full self-end join">
