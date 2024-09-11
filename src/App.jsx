@@ -3,6 +3,7 @@ import Markdown from 'react-markdown';
 import Prism from "prismjs";
 
 function App() {
+  const [stream, setStream] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [chat, setChat] = useState([
     {
@@ -18,50 +19,59 @@ function App() {
       const response = await fetch('http://localhost:5050/api/v1/chat/completions', {
         method: 'POST',
         headers: {
+          Accept: '*/*',
           'Content-Type': 'application/json',
           mode: 'development',
-          provider: 'open-ai'
+          // provider: 'open-ai'
+          provider: 'ollama'
         },
         body: JSON.stringify({
-          model: 'gpt-4o',
-          stream: true,
+          model: "tinydolphin",
+          stream: stream,
           messages: chat
+          // prompt
         })
       });
 
-      if (!response.ok) {
-        const { error } = await response.json();
-        setIsLoading(false);
-        throw new Error(error);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let dataResult = '';
-      const chatEntry = {};
-      let isDone = false;
-
-      while (!isDone) {
-        const result = await reader.read();
-        if (result.done) {
-          isDone = true;
-          break;
+      if (stream) {
+        if (!response.ok) {
+          const { error } = await response.json();
+          setIsLoading(false);
+          throw new Error(error);
         }
 
-        const chunk = decoder.decode(result.value, { stream: true });
-        const lines = chunk.split('\n');
-        lines.forEach(line => {
-          if (line.startsWith('data:')) {
-            const jsonStr = line.replace('data:', '');
-            const data = JSON.parse(jsonStr);
-            const content = data.choices[0]?.delta?.content;
-            if (content) {
-              dataResult += content;
-            }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let dataResult = '';
+        const chatEntry = {};
+        let isDone = false;
 
-            setChat([...chat, { role: 'assistant', content: dataResult }]);
+        while (!isDone) {
+          const result = await reader.read();
+          if (result.done) {
+            isDone = true;
+            break;
           }
-        });
+
+          const chunk = decoder.decode(result.value, { stream: true });
+          const lines = chunk.split('\n');
+          lines.forEach(line => {
+            if (line.startsWith('data:')) {
+              const jsonStr = line.replace('data:', '');
+              const data = JSON.parse(jsonStr);
+              console.log(data);
+              const content = data?.choices && data?.choices[0]?.delta?.content || data?.message?.content;
+              if (content) {
+                dataResult += content;
+              }
+
+              setChat([...chat, { role: 'assistant', content: dataResult }]);
+            }
+          });
+        }
+      } else {
+        const data = await response.json();
+        setChat([...chat, data.message]);
       }
     } catch (error) {
       console.error(error);
@@ -180,9 +190,12 @@ function App() {
                 })}
               </div>
             </div>
-            <div className="pb-6 w-full self-end join">
-              <input type="text" placeholder="Type here" className="input input-bordered w-full max-w-xs" disabled={chat.filter((entry) => entry.role === 'user').length >= 5 || isLoading} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-              <button className="btn btn-primary" disabled={chat.filter((entry) => entry.role === 'user').length >= 5 || isLoading} onClick={sendPrompt}>Submit✨</button>
+            <div className="pb-6 w-full self-end form-control">
+              <div className="input-group">
+                <input type="text" placeholder="Type here" className="input input-bordered max-w-xs" disabled={chat.filter((entry) => entry.role === 'user').length >= 5 || isLoading} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+                <input className="checkbox checkbox-warning" type="checkbox" value={stream} onClick={() => setStream(prev => !prev)} />
+                <button className="btn btn-primary" disabled={chat.filter((entry) => entry.role === 'user').length >= 5 || isLoading} onClick={sendPrompt}>Submit✨</button>
+              </div>
             </div>
           </div>
         </div>
